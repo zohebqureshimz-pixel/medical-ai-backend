@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+
+# Logs
+*.log
+
+# Local databases and indexes
+*.db
+
+
+# Hugging Face cache
+cache/
+.huggingface/
+
+# Ollama temp files (if any)
+ollama/
+
+# Jupyter
+.ipynb_checkpoints/
+
+.env
+__pycache__/
+node_modules/
