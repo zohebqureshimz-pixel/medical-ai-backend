@@ -9,6 +9,7 @@ google-genai
 python-dotenv
 python-multipart
 pydantic
+email-validator
 scikit-learn
 sqlalchemy
 psycopg2-binary
