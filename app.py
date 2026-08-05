@@ -1,11 +1,11 @@
 import os
 import shutil
+import gc
 import faiss
 import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from google import genai
 
@@ -33,7 +33,18 @@ Base.metadata.create_all(bind=engine)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# Lazy-loaded embedding model to prevent memory spike during Uvicorn startup (prevents OOM exit status 137)
+_embedding_model = None
+
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("[EmbeddingModel] Lazy loading SentenceTransformer('all-MiniLM-L6-v2')...")
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedding_model
+
 
 app = FastAPI(title="AI Medical Assistant API")
 app.include_router(auth_router)
@@ -54,6 +65,11 @@ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_BASE_DIR, exist_ok=True)
 
 
+@app.get("/")
+def root_health_check():
+    return {"status": "ok", "service": "AI Medical Assistant API"}
+
+
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
@@ -71,10 +87,11 @@ async def upload_pdf(
     upload_file_to_cloud(pdf_path, f"uploads/user_{current_user.id}/{file.filename}")
 
     document_name = file.filename
-
     new_chunks = process_pdf(pdf_path)
 
-    embeddings = model.encode(
+    # Lazy load embedding model
+    embed_model = get_embedding_model()
+    embeddings = embed_model.encode(
         [c["chunk"] for c in new_chunks],
         batch_size=32,
         show_progress_bar=False
@@ -109,6 +126,9 @@ async def upload_pdf(
         db.commit()
 
     db.close()
+
+    # Free memory after embedding generation
+    gc.collect()
 
     return {
         "message": "PDF indexed successfully",
