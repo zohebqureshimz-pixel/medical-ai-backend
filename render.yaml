@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: medical-ai-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: medical-ai-db
+          property: connectionString
+
+databases:
+  - name: medical-ai-db
+    databaseName: medical_ai
+    user: medical_admin
+    plan: free
+    region: singapore
