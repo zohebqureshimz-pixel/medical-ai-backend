@@ -3,6 +3,7 @@ services:
     name: medical-ai-backend
     env: docker
     plan: free
+    region: singapore
     envVars:
       - key: GEMINI_API_KEY
         sync: false
@@ -16,3 +17,4 @@ services:
 databases:
   - name: medical-ai-db
     plan: free
+    region: singapore

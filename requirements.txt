@@ -12,6 +12,7 @@ pydantic
 scikit-learn
 sqlalchemy
 psycopg2-binary
+bcrypt==3.2.2
 passlib[bcrypt]
 python-jose[cryptography]
 boto3
