@@ -60,10 +60,7 @@ def chunk_pages (pages,  document_name,
                     "chunk": chunk
                 }
             )
-            print(len(chunks))
-
-    for chunk in chunks[:5]:
-        print(chunk["document"])
+    print(f"Total chunks created: {len(chunks)}")
 
     return chunks
 

@@ -8,6 +8,11 @@ from sentence_transformers import SentenceTransformer
 from fastapi.middleware.cors import CORSMiddleware
 from rank_bm25 import BM25Okapi
 from google import genai
+from auth.routes import router as auth_router
+from auth.dependencies import get_current_user
+from auth.models import User , Document
+from auth.database import SessionLocal
+from fastapi import Depends
 
 import os
 from dotenv import load_dotenv
@@ -30,6 +35,7 @@ from storage import (
 )
 
 app = FastAPI()
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,18 +59,32 @@ except:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(
+    UPLOAD_BASE_DIR,
+    exist_ok=True
+)
 
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
 
-    global index  , chunks , bm25
+    user_upload_dir = os.path.join(
+    UPLOAD_BASE_DIR,
+    f"user_{current_user.id}"
+    )
+
+    os.makedirs(
+       user_upload_dir,
+       exist_ok=True
+    )
 
     pdf_path = os.path.join(
-        UPLOAD_DIR,
-        file.filename
+    user_upload_dir,
+    file.filename
     )
 
     with open(pdf_path, "wb") as buffer:
@@ -73,11 +93,23 @@ async def upload_pdf(file: UploadFile = File(...)):
             buffer
         )
 
+    document_name = (file.filename)
+
+    print("========== UPLOAD DEBUG ==========")
+    print("FILE FILENAME:", repr(file.filename))
+    print("DOCUMENT NAME:", repr(document_name))
+    print("USER ID:", current_user.id)
+    print("===================================")
+
     new_chunks = process_pdf(pdf_path)
+
+    chunks = new_chunks
 
 
     embeddings = model.encode(
-        [c["chunk"] for c in new_chunks]
+    [c["chunk"] for c in new_chunks],
+    batch_size=32,
+    show_progress_bar=False
     )
 
     embeddings = np.array(
@@ -87,12 +119,15 @@ async def upload_pdf(file: UploadFile = File(...)):
     faiss.normalize_L2(embeddings)
 
     
-    if index is None:
-       index = faiss.IndexFlatL2(embeddings.shape[1])
+    index = faiss.IndexFlatL2(
+    embeddings.shape[1]
+)
 
-    index.add(embeddings)
+    index.add(
+    embeddings
+    )
 
-    chunks.extend(new_chunks)
+    chunks = new_chunks
 
     tokenized_chunks = [
        chunk["chunk"].split()
@@ -101,9 +136,35 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     bm25 = BM25Okapi(tokenized_chunks)
 
-    save_index(index)
-    save_chunks(chunks)
-    save_bm25(bm25)
+    save_index(
+    index,
+    current_user.id,
+    document_name
+    )
+
+    save_chunks(
+    chunks,
+    current_user.id,
+    document_name
+    )
+
+    save_bm25( 
+    bm25,
+    current_user.id,
+    document_name
+    )
+
+    db = SessionLocal()
+
+    document = Document(
+        user_id=current_user.id,
+        filename=file.filename,
+        filepath=pdf_path
+    )
+
+    db.add(document)
+    db.commit()
+    db.close()
 
     return {
         "message": "PDF indexed successfully"
@@ -111,17 +172,58 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+@app.get("/documents")
+def get_documents(current_user: User = Depends(get_current_user)
+):
+    db = SessionLocal()
+
+    documents = db.query(Document).filter(
+        Document.user_id == current_user.id
+    ).all()
+
+    db.close()
+
+    return {
+        "documents":[
+            doc.filename
+            for doc in documents
+        ]
+    }
+
 
 @app.post("/ask")
 def ask_question(
-    data: QuestionRequest
+    data: QuestionRequest,
+    current_user: User = Depends(get_current_user)
 ):
 
+    index = load_index(
+    current_user.id,
+    data.document_name
+    )
+
+    chunks = load_chunks(
+    current_user.id,
+    data.document_name
+    )
+
+    bm25 = load_bm25(
+    current_user.id,    
+    data.document_name
+    )
+
+
+    if index is None:
+        return {
+        "answer": "Document not found"
+    }
+
+
     results = search(
-        data.question,
-        index,
-        chunks,
-        bm25
+    data.question,
+    index,
+    chunks,
+    bm25
     )
 
     context = "\n\n".join(
@@ -176,3 +278,12 @@ Question:
         ]
     }
 
+@app.get("/profile")
+def profile(
+    current_user: User = Depends(get_current_user)
+):
+
+    return {
+        "id": current_user.id,
+        "email": current_user.email
+    }
