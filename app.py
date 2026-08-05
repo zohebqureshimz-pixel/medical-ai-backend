@@ -1,27 +1,19 @@
-from fastapi import FastAPI
-from fastapi import UploadFile, File
-import shutil
 import os
+import shutil
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from google import genai
+
 from auth.routes import router as auth_router
 from auth.dependencies import get_current_user
-from auth.models import User , Document
-from auth.database import SessionLocal
-from fastapi import Depends
-
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-model = SentenceTransformer("all-MiniLM-L6-v2")
+from auth.models import User, Document
+from auth.database import SessionLocal, engine, Base
+from cloud_storage import upload_file_to_cloud
 from ingestion import process_pdf
 from models import QuestionRequest
 from retriever import search
@@ -34,160 +26,109 @@ from storage import (
     save_bm25,
 )
 
-app = FastAPI()
+load_dotenv()
+
+# Automatically create PostgreSQL / SQLite database tables on startup
+Base.metadata.create_all(bind=engine)
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+app = FastAPI(title="AI Medical Assistant API")
 app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000" , "https://medical-ai-frontend-rho.vercel.app"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://medical-ai-frontend-rho.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-try:
-    index = load_index()
-    chunks = load_chunks()
-    bm25 = load_bm25()
-    print("Existing index loaded.")
-except:
-    index = None
-    chunks = []
-    bm25 = None
-    print("No previous index found.")
-
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_BASE_DIR, exist_ok=True)
 
-os.makedirs(
-    UPLOAD_BASE_DIR,
-    exist_ok=True
-)
 
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
+    user_upload_dir = os.path.join(UPLOAD_BASE_DIR, f"user_{current_user.id}")
+    os.makedirs(user_upload_dir, exist_ok=True)
 
-    user_upload_dir = os.path.join(
-    UPLOAD_BASE_DIR,
-    f"user_{current_user.id}"
-    )
-
-    os.makedirs(
-       user_upload_dir,
-       exist_ok=True
-    )
-
-    pdf_path = os.path.join(
-    user_upload_dir,
-    file.filename
-    )
+    pdf_path = os.path.join(user_upload_dir, file.filename)
 
     with open(pdf_path, "wb") as buffer:
-        shutil.copyfileobj(
-            file.file,
-            buffer
-        )
+        shutil.copyfileobj(file.file, buffer)
 
-    document_name = (file.filename)
+    # Sync PDF file to Cloud Storage if configured
+    upload_file_to_cloud(pdf_path, f"uploads/user_{current_user.id}/{file.filename}")
 
-    print("========== UPLOAD DEBUG ==========")
-    print("FILE FILENAME:", repr(file.filename))
-    print("DOCUMENT NAME:", repr(document_name))
-    print("USER ID:", current_user.id)
-    print("===================================")
+    document_name = file.filename
 
     new_chunks = process_pdf(pdf_path)
 
-    chunks = new_chunks
-
-
     embeddings = model.encode(
-    [c["chunk"] for c in new_chunks],
-    batch_size=32,
-    show_progress_bar=False
+        [c["chunk"] for c in new_chunks],
+        batch_size=32,
+        show_progress_bar=False
     )
 
-    embeddings = np.array(
-        embeddings
-    ).astype("float32")
-
+    embeddings = np.array(embeddings).astype("float32")
     faiss.normalize_L2(embeddings)
 
-    
-    index = faiss.IndexFlatL2(
-    embeddings.shape[1]
-)
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(embeddings)
 
-    index.add(
-    embeddings
-    )
-
-    chunks = new_chunks
-
-    tokenized_chunks = [
-       chunk["chunk"].split()
-       for chunk in chunks
-    ]
-
+    tokenized_chunks = [chunk["chunk"].split() for chunk in new_chunks]
     bm25 = BM25Okapi(tokenized_chunks)
 
-    save_index(
-    index,
-    current_user.id,
-    document_name
-    )
-
-    save_chunks(
-    chunks,
-    current_user.id,
-    document_name
-    )
-
-    save_bm25( 
-    bm25,
-    current_user.id,
-    document_name
-    )
+    save_index(index, current_user.id, document_name)
+    save_chunks(new_chunks, current_user.id, document_name)
+    save_bm25(bm25, current_user.id, document_name)
 
     db = SessionLocal()
+    existing_doc = db.query(Document).filter(
+        Document.user_id == current_user.id,
+        Document.filename == file.filename
+    ).first()
 
-    document = Document(
-        user_id=current_user.id,
-        filename=file.filename,
-        filepath=pdf_path
-    )
+    if not existing_doc:
+        document = Document(
+            user_id=current_user.id,
+            filename=file.filename,
+            filepath=pdf_path
+        )
+        db.add(document)
+        db.commit()
 
-    db.add(document)
-    db.commit()
     db.close()
 
     return {
-        "message": "PDF indexed successfully"
+        "message": "PDF indexed successfully",
+        "filename": file.filename
     }
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
 
 @app.get("/documents")
-def get_documents(current_user: User = Depends(get_current_user)
-):
+def get_documents(current_user: User = Depends(get_current_user)):
     db = SessionLocal()
-
     documents = db.query(Document).filter(
         Document.user_id == current_user.id
     ).all()
-
     db.close()
 
     return {
-        "documents":[
-            doc.filename
-            for doc in documents
-        ]
+        "documents": [doc.filename for doc in documents]
     }
 
 
@@ -196,40 +137,18 @@ def ask_question(
     data: QuestionRequest,
     current_user: User = Depends(get_current_user)
 ):
+    index = load_index(current_user.id, data.document_name)
+    chunks = load_chunks(current_user.id, data.document_name)
+    bm25 = load_bm25(current_user.id, data.document_name)
 
-    index = load_index(
-    current_user.id,
-    data.document_name
-    )
-
-    chunks = load_chunks(
-    current_user.id,
-    data.document_name
-    )
-
-    bm25 = load_bm25(
-    current_user.id,    
-    data.document_name
-    )
-
-
-    if index is None:
+    if index is None or not chunks:
         return {
-        "answer": "Document not found"
-    }
+            "answer": "Document not found or index missing. Please upload the PDF document first."
+        }
 
+    results = search(data.question, index, chunks, bm25)
 
-    results = search(
-    data.question,
-    index,
-    chunks,
-    bm25
-    )
-
-    context = "\n\n".join(
-        chunk["chunk"]
-        for chunk in results
-    )
+    context = "\n\n".join(chunk["chunk"] for chunk in results)
 
     prompt = f"""
 You are a medical study assistant.
@@ -256,11 +175,15 @@ Question:
 {data.question}
 """
 
+    if not client:
+        return {
+            "answer": "GEMINI_API_KEY is not configured.",
+            "sources": []
+        }
 
-    
     response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt,
+        model="gemini-2.5-flash",
+        contents=prompt,
     )
 
     answer = response.text
@@ -278,11 +201,9 @@ Question:
         ]
     }
 
-@app.get("/profile")
-def profile(
-    current_user: User = Depends(get_current_user)
-):
 
+@app.get("/profile")
+def profile(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,
         "email": current_user.email
