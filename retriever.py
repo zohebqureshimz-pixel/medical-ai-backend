@@ -1,19 +1,40 @@
-from sentence_transformers import SentenceTransformer
-from sentence_transformers import CrossEncoder
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import numpy as np
 import faiss
 
 
-model = SentenceTransformer(
-    "all-MiniLM-L6-v2"
-)
-
-reranker = CrossEncoder(
-    "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+# Lazy-loaded models
+_model = None
+_reranker = None
 
 
-def search(query , index , chunks , bm25, k=5):
+def get_embedding_model():
+    global _model
+
+    if _model is None:
+        print("[Retriever] Loading SentenceTransformer...")
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    return _model
+
+
+def get_reranker():
+    global _reranker
+
+    if _reranker is None:
+        print("[Retriever] Loading CrossEncoder reranker...")
+        _reranker = CrossEncoder(
+            "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        )
+
+    return _reranker
+
+
+def search(query, index, chunks, bm25, k=5):
+
+    # Load embedding model only when search is actually called
+    model = get_embedding_model()
+
     embedding_query = model.encode([query])
 
     embedding_query = np.array(embedding_query).astype("float32")
@@ -23,55 +44,63 @@ def search(query , index , chunks , bm25, k=5):
     faiss_k = 20
     bm25_k = 20
     final_k = 5
-    
+
     distances, indices = index.search(
         embedding_query,
         faiss_k
     )
+
     query_tokens = query.lower().split()
 
     bm25_scores = bm25.get_scores(query_tokens)
-    
+
     faiss_indices = indices[0]
 
     bm25_indices = np.argsort(
         bm25_scores
-        )[::-1][:bm25_k]
-    
+    )[::-1][:bm25_k]
+
     rrf = {}
 
-    for rank , indx in enumerate(faiss_indices):
+    for rank, indx in enumerate(faiss_indices):
         rrf[indx] = (
             rrf.get(indx, 0)
-        + 1 / (60 + rank)
-    )
-    
-    for rank , indx in enumerate(bm25_indices):
-        rrf[indx] = (
-            rrf.get(indx , 0)
             + 1 / (60 + rank)
         )
 
-    final_indices=sorted(
-        rrf , key = rrf.get, reverse= True
-    ) [:final_k]
+    for rank, indx in enumerate(bm25_indices):
+        rrf[indx] = (
+            rrf.get(indx, 0)
+            + 1 / (60 + rank)
+        )
+
+    final_indices = sorted(
+        rrf,
+        key=rrf.get,
+        reverse=True
+    )[:final_k]
 
     pairs = [
-    (query, chunks[i]["chunk"])
-    for i in final_indices
-]
+        (query, chunks[i]["chunk"])
+        for i in final_indices
+    ]
+
+    # Load reranker only when actually needed
+    reranker = get_reranker()
+
     score = reranker.predict(pairs)
 
     ranked = sorted(
-    zip(final_indices, score),
-    key=lambda x: x[1],
-    reverse=True
-)   
-    
+        zip(final_indices, score),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
     top_indices = [
-        indx for indx , score in ranked[:final_k]
+        indx for indx, score in ranked[:final_k]
     ]
+
     return [
         chunks[i]
         for i in top_indices
-    ]    
+    ]
