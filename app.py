@@ -93,7 +93,7 @@ async def upload_pdf(
     embed_model = get_embedding_model()
     embeddings = embed_model.encode(
         [c["chunk"] for c in new_chunks],
-        batch_size=32,
+        batch_size=8,
         show_progress_bar=False
     )
 
