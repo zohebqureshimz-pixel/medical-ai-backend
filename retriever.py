@@ -79,24 +79,27 @@ def search(query, index, chunks, bm25, k=5):
         reverse=True
     )[:final_k]
 
-    pairs = [
-        (query, chunks[i]["chunk"])
-        for i in final_indices
-    ]
+    try:
+        pairs = [
+            (query, chunks[i]["chunk"])
+            for i in final_indices
+        ]
 
-    reranker = get_reranker()
+        reranker = get_reranker()
+        score = reranker.predict(pairs)
 
-    score = reranker.predict(pairs)
+        ranked = sorted(
+            zip(final_indices, score),
+            key=lambda x: x[1],
+            reverse=True
+        )
 
-    ranked = sorted(
-        zip(final_indices, score),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    top_indices = [
-        indx for indx, score in ranked[:final_k]
-    ]
+        top_indices = [
+            indx for indx, score in ranked[:final_k]
+        ]
+    except Exception as e:
+        print(f"[Retriever Warning] Reranker skipped or failed ({e}). Falling back to RRF indices.")
+        top_indices = final_indices[:final_k]
 
     return [
         chunks[i]

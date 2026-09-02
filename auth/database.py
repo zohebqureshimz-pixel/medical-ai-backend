@@ -17,26 +17,39 @@ if DATABASE_URL.startswith("postgres://"):
         1
     )
 
-if DATABASE_URL.startswith("sqlite"):
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={
-            "check_same_thread": False
-        },
-        pool_pre_ping=True
-    )
+def create_app_engine(url):
+    if url.startswith("sqlite"):
+        eng = create_engine(
+            url,
+            connect_args={"check_same_thread": False},
+            pool_pre_ping=True
+        )
 
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON;")
-        cursor.close()
-else:
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=300
-    )
+        @event.listens_for(eng, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.close()
+
+        return eng
+    else:
+        try:
+            eng = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_recycle=300
+            )
+            # Test connection
+            with eng.connect() as conn:
+                pass
+            print("[Database] Successfully connected to PostgreSQL.")
+            return eng
+        except Exception as e:
+            print(f"[Database Error] Failed to connect to PostgreSQL ({e}). Falling back to SQLite.")
+            return create_app_engine(DEFAULT_SQLITE_DB)
+
+
+engine = create_app_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(
     autocommit=False,
