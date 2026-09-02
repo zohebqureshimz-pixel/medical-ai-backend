@@ -47,8 +47,21 @@ def get_embedding_model():
     return _embedding_model
 
 
+from fastapi.responses import JSONResponse
+import traceback
+
 app = FastAPI(title="AI Medical Assistant API")
 app.include_router(auth_router)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    print(f"[Error] {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc), "traceback": traceback.format_exc()}
+    )
+
 
 app.add_middleware(
     CORSMiddleware,
