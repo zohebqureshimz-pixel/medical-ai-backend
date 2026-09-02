@@ -4,7 +4,7 @@ import gc
 import faiss
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Depends
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from rank_bm25 import BM25Okapi
 from google import genai
@@ -90,19 +90,40 @@ async def upload_pdf(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Please choose a PDF file.")
+
     user_upload_dir = os.path.join(UPLOAD_BASE_DIR, f"user_{current_user.id}")
     os.makedirs(user_upload_dir, exist_ok=True)
 
-    pdf_path = os.path.join(user_upload_dir, file.filename)
+    pdf_path = os.path.join(user_upload_dir, filename)
 
     with open(pdf_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Sync PDF file to Cloud Storage if configured
-    upload_file_to_cloud(pdf_path, f"uploads/user_{current_user.id}/{file.filename}")
+    if os.path.getsize(pdf_path) == 0:
+        os.remove(pdf_path)
+        raise HTTPException(status_code=400, detail="The selected PDF is empty.")
 
-    document_name = file.filename
-    new_chunks = process_pdf(pdf_path)
+    # Sync PDF file to Cloud Storage if configured
+    upload_file_to_cloud(pdf_path, f"uploads/user_{current_user.id}/{filename}")
+
+    document_name = filename
+    try:
+        new_chunks = process_pdf(pdf_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="This file could not be read as a valid PDF."
+        ) from exc
+
+    new_chunks = [chunk for chunk in new_chunks if chunk["chunk"].strip()]
+    if not new_chunks:
+        raise HTTPException(
+            status_code=422,
+            detail="No readable text was found in this PDF. Please upload a text-based PDF."
+        )
 
     # Lazy load embedding model
     embed_model = get_embedding_model()
@@ -127,13 +148,13 @@ async def upload_pdf(
 
     existing_doc = db.query(Document).filter(
         Document.user_id == current_user.id,
-        Document.filename == file.filename
+        Document.filename == filename
     ).first()
 
     if not existing_doc:
         document = Document(
             user_id=current_user.id,
-            filename=file.filename,
+            filename=filename,
             filepath=pdf_path
         )
         db.add(document)
@@ -144,7 +165,7 @@ async def upload_pdf(
 
     return {
         "message": "PDF indexed successfully",
-        "filename": file.filename
+        "filename": filename
     }
 
 
