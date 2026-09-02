@@ -13,5 +13,5 @@ sqlalchemy
 psycopg2-binary
 boto3
 PyMuPDF
-passlib[bcrypt]
+bcrypt
 python-jose[cryptography]
