@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 
+# Cache buster to force fresh container layer build on Render
+ENV REBUILD_VERSION=20260902_v2
+
 COPY . .
 
 EXPOSE 8000
