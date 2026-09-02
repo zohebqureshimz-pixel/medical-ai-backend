@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-
-from auth.database import SessionLocal
+from auth.database import SessionLocal, Base, engine
 from auth.models import User
-from auth.schemas import UserCreate , UserLogin , Token
+from auth.schemas import UserCreate, UserLogin, Token
 from auth.security import (
     hash_password,
     verify_password,
@@ -14,6 +13,11 @@ router = APIRouter()
 
 
 def get_db():
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"[DB Auto-Create Warning] {e}")
+
     db = SessionLocal()
     try:
         yield db
@@ -23,29 +27,37 @@ def get_db():
 
 @router.post("/signup")
 def signup(user: UserCreate, db: Session = Depends(get_db)):
+    try:
+        existing_user = db.query(User).filter(
+            User.email == user.email
+        ).first()
 
-    existing_user = db.query(User).filter(
-        User.email == user.email
-    ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered"
+            )
 
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered"
+        new_user = User(
+            email=user.email,
+            hashed_password=hash_password(user.password)
         )
 
-    new_user = User(
-        email=user.email,
-        hashed_password=hash_password(user.password)
-    )
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return {
-        "message": "User created successfully"
-    }
+        return {
+            "message": "User created successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error during signup: {str(e)}"
+        )
 
 @router.post("/login", response_model=Token)
 def login(
