@@ -32,7 +32,6 @@ def get_reranker():
 
 def search(query, index, chunks, bm25, k=5):
 
-    # Load embedding model only when search is actually called
     model = get_embedding_model()
 
     embedding_query = model.encode([query])
@@ -85,7 +84,6 @@ def search(query, index, chunks, bm25, k=5):
         for i in final_indices
     ]
 
-    # Load reranker only when actually needed
     reranker = get_reranker()
 
     score = reranker.predict(pairs)

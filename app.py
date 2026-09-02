@@ -10,9 +10,10 @@ from rank_bm25 import BM25Okapi
 from google import genai
 
 from auth.routes import router as auth_router
-from auth.dependencies import get_current_user
+from auth.dependencies import get_current_user, get_db
 from auth.models import User, Document
-from auth.database import SessionLocal, engine, Base
+from auth.database import engine, Base
+from sqlalchemy.orm import Session
 from cloud_storage import upload_file_to_cloud
 from ingestion import process_pdf
 from models import QuestionRequest
@@ -73,7 +74,8 @@ def root_health_check():
 @app.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     user_upload_dir = os.path.join(UPLOAD_BASE_DIR, f"user_{current_user.id}")
     os.makedirs(user_upload_dir, exist_ok=True)
@@ -110,7 +112,6 @@ async def upload_pdf(
     save_chunks(new_chunks, current_user.id, document_name)
     save_bm25(bm25, current_user.id, document_name)
 
-    db = SessionLocal()
     existing_doc = db.query(Document).filter(
         Document.user_id == current_user.id,
         Document.filename == file.filename
@@ -125,8 +126,6 @@ async def upload_pdf(
         db.add(document)
         db.commit()
 
-    db.close()
-
     # Free memory after embedding generation
     gc.collect()
 
@@ -140,12 +139,13 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 @app.get("/documents")
-def get_documents(current_user: User = Depends(get_current_user)):
-    db = SessionLocal()
+def get_documents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     documents = db.query(Document).filter(
         Document.user_id == current_user.id
     ).all()
-    db.close()
 
     return {
         "documents": [doc.filename for doc in documents]

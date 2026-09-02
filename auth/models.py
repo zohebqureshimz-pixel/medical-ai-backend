@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -24,7 +25,8 @@ class User(Base):
 
     documents = relationship(
         "Document",
-        back_populates="user"
+        back_populates="user",
+        cascade="all, delete-orphan"
     )
 
     hashed_password = Column(
@@ -36,12 +38,6 @@ class User(Base):
         DateTime(timezone=True),
         server_default=func.now()
     )
-
-
-
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
-from sqlalchemy.orm import relationship
-from datetime import datetime
 
 
 class Document(Base):
@@ -56,7 +52,7 @@ class Document(Base):
 
     user_id = Column(
         Integer,
-        ForeignKey("users.id")
+        ForeignKey("users.id", ondelete="CASCADE")
     )
 
     filename = Column(
@@ -68,10 +64,9 @@ class Document(Base):
     )
 
     uploaded_at = Column(
-        DateTime,
-        default=datetime.utcnow
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
     )
-
 
     user = relationship(
         "User",
